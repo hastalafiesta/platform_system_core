@@ -35,7 +35,6 @@
 #include <cutils/partition_utils.h>
 #include <cutils/properties.h>
 #include <logwrap/logwrap.h>
-#include <blkid/blkid.h>
 
 #include "mincrypt/rsa.h"
 #include "mincrypt/sha.h"
@@ -143,12 +142,12 @@ static void check_fs(char *blk_device, char *fs_type, char *target)
             }
         }
     } else if (!strcmp(fs_type, "f2fs")) {
-        char *f2fs_fsck_argv[] = {
-            F2FS_FSCK_BIN,
-            "-a",
-            blk_device
-        };
-        INFO("Running %s on %s\n", F2FS_FSCK_BIN, blk_device);
+            char *f2fs_fsck_argv[] = {
+                    F2FS_FSCK_BIN,
+                    "-f",
+                    blk_device
+            };
+        INFO("Running %s -f %s\n", F2FS_FSCK_BIN, blk_device);
 
         ret = android_fork_execvp_ext(ARRAY_SIZE(f2fs_fsck_argv), f2fs_fsck_argv,
                                       &status, true, LOG_KLOG | LOG_FILE,
@@ -285,8 +284,6 @@ static int mount_with_alternatives(struct fstab *fstab, int start_idx, int *end_
     int i;
     int mount_errno = 0;
     int mounted = 0;
-    int cmp_len;
-    char *detected_fs_type;
 
     if (!end_idx || !attempted_idx || start_idx >= fstab->num_entries) {
       errno = EINVAL;
@@ -312,16 +309,8 @@ static int mount_with_alternatives(struct fstab *fstab, int start_idx, int *end_
             }
 
             if (fstab->recs[i].fs_mgr_flags & MF_CHECK) {
-                /* Skip file system check unless we are sure we are the right type */
-                detected_fs_type = blkid_get_tag_value(NULL, "TYPE", fstab->recs[i].blk_device);
-                if (detected_fs_type) {
-                    cmp_len = (!strncmp(detected_fs_type, "ext", 3) &&
-                            strlen(detected_fs_type) == 4) ? 3 : strlen(detected_fs_type);
-                    if (!strncmp(fstab->recs[i].fs_type, detected_fs_type, cmp_len)) {
-                        check_fs(fstab->recs[i].blk_device, fstab->recs[i].fs_type,
-                                 fstab->recs[i].mount_point);
-                    }
-                }
+                check_fs(fstab->recs[i].blk_device, fstab->recs[i].fs_type,
+                         fstab->recs[i].mount_point);
             }
             if (!__mount(fstab->recs[i].blk_device, fstab->recs[i].mount_point, &fstab->recs[i])) {
                 *attempted_idx = i;
@@ -385,7 +374,6 @@ int fs_mgr_mount_all(struct fstab *fstab)
         }
 
         if ((fstab->recs[i].fs_mgr_flags & MF_VERIFY) && device_is_secure()) {
-            wait_for_file("/dev/device-mapper", WAIT_TIMEOUT);
             int rc = fs_mgr_setup_verity(&fstab->recs[i]);
             if (device_is_debuggable() && rc == FS_MGR_SETUP_VERITY_DISABLED) {
                 INFO("Verity disabled");

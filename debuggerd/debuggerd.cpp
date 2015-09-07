@@ -1,6 +1,5 @@
 /*
  * Copyright 2006, The Android Open Source Project
- * Copyright (c) 2013, The Linux Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-#define LOG_TAG "DEBUG"
 
 #include <stdio.h>
 #include <errno.h>
@@ -77,13 +74,11 @@ static void wait_for_user_action(const debugger_request_t &request) {
         "* and start gdbclient:\n"
         "*\n"
         "*     gdbclient %s :5039 %d\n"
-        "* or\n"
-        "*     dddclient %s :5039 %d\n"
         "*\n"
         "* Wait for gdb to start, then press the VOLUME DOWN key\n"
         "* to let the process continue crashing.\n"
         "********************************************************",
-        request.pid, exe, request.tid, exe, request.tid);
+        request.pid, exe, request.tid);
 
   // Wait for VOLUME DOWN.
   if (init_getevent() == 0) {
@@ -127,84 +122,6 @@ static int get_process_info(pid_t tid, pid_t* out_pid, uid_t* out_uid, uid_t* ou
   }
   fclose(fp);
   return fields == 7 ? 0 : -1;
-}
-
-static bool copy_file(const char* src, char* dest)
-{
-   #define BUF_SIZE 64
-   ssize_t bytes;
-   int  source_fh, dest_fh;
-   int  total_size = 0;
-   char buffer[BUF_SIZE];
-
-   if ((source_fh = open(src, O_RDONLY, O_NOFOLLOW)) == -1) {
-        ALOGE("Unable to open source file %s\n", src);
-   } else {
-        if((dest_fh = open(dest, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0640)) == -1) {
-            ALOGE("Unable to write destination file %s\n", dest);
-        } else {
-            while ((bytes = read(source_fh, buffer, BUF_SIZE)) > 0) {
-                if (write(dest_fh, buffer, bytes) < 0) {
-                    ALOGE("Write failed for destination file %s. Copied %d bytes\n",
-                            dest, total_size);
-                    break;
-                }
-                total_size += bytes;
-            }
-            ALOGI("Copied %s to %s - size: %d\n", src, dest, total_size);
-            fsync(dest_fh);
-            close(dest_fh);
-        }
-        close(source_fh);
-        if (total_size > 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void collect_etb_map(int cr_pid)
-{
-    struct stat s;
-    char   src_buf[64];
-    char   dest_buf[64];
-
-    snprintf(dest_buf, sizeof dest_buf, "/data/core/etb.%d", cr_pid);
-    if (!copy_file("/dev/coresight-tmc-etf", dest_buf)) {
-        ALOGE("Unable to copy ETB buffer file /dev/coresight-tmc-etf\n");
-    } else {
-        memset(src_buf, 0, sizeof(src_buf));
-        snprintf(src_buf, sizeof(src_buf), "/proc/%d/maps", cr_pid);
-        if(stat(src_buf, &s)) {
-            ALOGE("map file /proc/%d/maps does not exist for pid %d\n",
-                cr_pid, cr_pid);
-        } else {
-            snprintf(dest_buf, sizeof dest_buf, "/data/core/maps.%d", cr_pid);
-            if (!copy_file(src_buf, dest_buf)) {
-                ALOGE("Unable to copy map file /proc/%d/maps", cr_pid);
-            }
-        }
-    }
-}
-
-static void enable_etb_trace(struct ucred cr) {
-    char value[PROPERTY_VALUE_MAX];
-    property_get("persist.debug.trace", value, "");
-    if ((strcmp(value,"1") == 0)) {
-        /* Allow ETB collection only once; Note: in future this behavior can be changed
-        * To allow this, use a property to indicate whether the ETB has been collected */
-        property_get("debug.etb.collected", value, "");
-        if(strcmp(value,"1")) {
-            ALOGI("Collecting ETB dumps (from pid=%d uid=%d)\n",
-                     cr.pid, cr.uid);
-            property_set("debug.etb.collected", "1");
-            collect_etb_map(cr.pid);
-        }
-        else {
-            ALOGI("ETB already collected once, skipping (from pid=%d uid=%d)\n",
-                     cr.pid, cr.uid);
-        }
-    }
 }
 
 static int read_request(int fd, debugger_request_t* out_request) {
@@ -253,7 +170,6 @@ static int read_request(int fd, debugger_request_t* out_request) {
     // Ensure that the tid reported by the crashing process is valid.
     char buf[64];
     struct stat s;
-    enable_etb_trace(cr);
     snprintf(buf, sizeof buf, "/proc/%d/task/%d", out_request->pid, out_request->tid);
     if (stat(buf, &s)) {
       ALOGE("tid %d does not exist in pid %d. ignoring debug request\n",
@@ -282,19 +198,7 @@ static bool should_attach_gdb(debugger_request_t* request) {
     char value[PROPERTY_VALUE_MAX];
     property_get("debug.db.uid", value, "-1");
     int debug_uid = atoi(value);
-    if (debug_uid >= 0 && request->uid <= (uid_t)debug_uid) {
-      return true;
-    } else {
-      /* External docs say to use 10,000 but more is likely needed; be helpful. */
-      if (request->uid > (uid_t)debug_uid) {
-        ALOGI("request->uid:%d > property debug.db.uid:%d; NOT waiting for gdb.",
-               request->uid,                 debug_uid);
-      } else {
-        ALOGI("property debug.db.uid not set; NOT waiting for gdb.");
-        ALOGI("HINT: adb shell setprop debug.db.uid 100000");
-        ALOGI("HINT: adb forward tcp:5039 tcp:5039");
-      }
-    }
+    return debug_uid >= 0 && request->uid <= (uid_t)debug_uid;
   }
   return false;
 }

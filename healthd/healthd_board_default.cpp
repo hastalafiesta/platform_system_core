@@ -15,17 +15,15 @@
  */
 
 #include <healthd.h>
-#include "healthd_msm.h"
 
 void healthd_board_init(struct healthd_config*)
 {
     // use defaults
-    power_off_alarm_init();
 }
 
 
 int healthd_board_battery_update(struct android::BatteryProperties*)
 {
     // return 0 to log periodic polled battery status to kernel log
-    return 1;
+    return 0;
 }

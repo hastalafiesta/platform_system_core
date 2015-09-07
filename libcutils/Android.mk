@@ -71,10 +71,6 @@ ifneq ($(WINDOWS_HOST_ONLY),1)
 
 endif
 
-ifeq ($(TARGET_USES_HUAWEI_APP_INFO),true)
-    commonSources += \
-	huawei.c
-endif
 
 # Static library for host
 # ========================================================
@@ -144,14 +140,6 @@ LOCAL_CFLAGS_arm64 += -DHAVE_MEMSET16 -DHAVE_MEMSET32
 LOCAL_CFLAGS_mips += -DHAVE_MEMSET16 -DHAVE_MEMSET32
 LOCAL_CFLAGS_x86 += -DHAVE_MEMSET16 -DHAVE_MEMSET32
 LOCAL_CFLAGS_x86_64 += -DHAVE_MEMSET16 -DHAVE_MEMSET32
-
-ifneq ($(TARGET_RECOVERY_PRE_COMMAND),)
-    LOCAL_CFLAGS += -DRECOVERY_PRE_COMMAND='$(TARGET_RECOVERY_PRE_COMMAND)'
-endif
-
-ifeq ($(TARGET_RECOVERY_PRE_COMMAND_CLEAR_REASON),true)
-    LOCAL_CFLAGS += -DRECOVERY_PRE_COMMAND_CLEAR_REASON
-endif
 
 LOCAL_C_INCLUDES := $(libcutils_c_includes)
 LOCAL_STATIC_LIBRARIES := liblog

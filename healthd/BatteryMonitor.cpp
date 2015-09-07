@@ -135,8 +135,6 @@ BatteryMonitor::PowerSupplyType BatteryMonitor::readPowerSupplyType(const String
             { "USB_CDP", ANDROID_POWER_SUPPLY_TYPE_AC },
             { "USB_ACA", ANDROID_POWER_SUPPLY_TYPE_AC },
             { "Wireless", ANDROID_POWER_SUPPLY_TYPE_WIRELESS },
-            { "Wipower", ANDROID_POWER_SUPPLY_TYPE_WIRELESS },
-            { "USB_HVDCP", ANDROID_POWER_SUPPLY_TYPE_AC },
             { NULL, 0 },
     };
 
@@ -211,59 +209,35 @@ bool BatteryMonitor::update(void) {
     if (readFromFile(mHealthdConfig->batteryTechnologyPath, buf, SIZE) > 0)
         props.batteryTechnology = String8(buf);
 
-    // reinitialize the mChargerNames vector everytime there is an update
-    String8 path;
-    DIR* dir = opendir(POWER_SUPPLY_SYSFS_PATH);
-    if (dir == NULL) {
-        KLOG_ERROR(LOG_TAG, "Could not open %s\n", POWER_SUPPLY_SYSFS_PATH);
-    } else {
-        struct dirent* entry;
-        // reconstruct the charger strings
-        mChargerNames.clear();
-        while ((entry = readdir(dir))) {
-            const char* name = entry->d_name;
+    unsigned int i;
 
-            if (!strcmp(name, ".") || !strcmp(name, ".."))
-                continue;
+    for (i = 0; i < mChargerNames.size(); i++) {
+        String8 path;
+        path.appendFormat("%s/%s/online", POWER_SUPPLY_SYSFS_PATH,
+                          mChargerNames[i].string());
 
-            // Look for "type" file in each subdirectory
-            path.clear();
-            path.appendFormat("%s/%s/type", POWER_SUPPLY_SYSFS_PATH, name);
-            switch(readPowerSupplyType(path)) {
-            case ANDROID_POWER_SUPPLY_TYPE_BATTERY:
-                break;
-            default:
+        if (readFromFile(path, buf, SIZE) > 0) {
+            if (buf[0] != '0') {
                 path.clear();
-                path.appendFormat("%s/%s/online", POWER_SUPPLY_SYSFS_PATH, name);
-                if (access(path.string(), R_OK) == 0) {
-                    mChargerNames.add(String8(name));
-                    if (readFromFile(path, buf, SIZE) > 0) {
-                        if (buf[0] != '0') {
-                            path.clear();
-                            path.appendFormat("%s/%s/type", POWER_SUPPLY_SYSFS_PATH,
-                                              name);
-                            switch(readPowerSupplyType(path)) {
-                            case ANDROID_POWER_SUPPLY_TYPE_AC:
-                                props.chargerAcOnline = true;
-                                break;
-                            case ANDROID_POWER_SUPPLY_TYPE_USB:
-                                props.chargerUsbOnline = true;
-                                break;
-                            case ANDROID_POWER_SUPPLY_TYPE_WIRELESS:
-                                props.chargerWirelessOnline = true;
-                                break;
-                            default:
-                                KLOG_WARNING(LOG_TAG, "%s: Unknown power supply type\n",
-                                             name);
-                            }
-                        }
-                    }
+                path.appendFormat("%s/%s/type", POWER_SUPPLY_SYSFS_PATH,
+                                  mChargerNames[i].string());
+                switch(readPowerSupplyType(path)) {
+                case ANDROID_POWER_SUPPLY_TYPE_AC:
+                    props.chargerAcOnline = true;
+                    break;
+                case ANDROID_POWER_SUPPLY_TYPE_USB:
+                    props.chargerUsbOnline = true;
+                    break;
+                case ANDROID_POWER_SUPPLY_TYPE_WIRELESS:
+                    props.chargerWirelessOnline = true;
+                    break;
+                default:
+                    KLOG_WARNING(LOG_TAG, "%s: Unknown power supply type\n",
+                                 mChargerNames[i].string());
                 }
-                break;
-            } //switch
-        } //while
-        closedir(dir);
-    }//else
+            }
+        }
+    }
 
     logthis = !healthd_board_battery_update(&props);
 

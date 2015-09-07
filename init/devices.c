@@ -47,7 +47,6 @@
 #include "ueventd_parser.h"
 #include "util.h"
 #include "log.h"
-#include <zlib.h>
 
 #define UNUSED __attribute__((__unused__))
 
@@ -55,10 +54,8 @@
 #define FIRMWARE_DIR1   "/etc/firmware"
 #define FIRMWARE_DIR2   "/vendor/firmware"
 #define FIRMWARE_DIR3   "/firmware/image"
-#define DEVICES_BASE    "/devices/soc.0"
 
 extern struct selabel_handle *sehandle;
-extern char bootdevice[32];
 
 static int device_fd = -1;
 
@@ -171,14 +168,7 @@ void fixup_sys_perms(const char *upath)
     }
     if (access(buf, F_OK) == 0) {
         INFO("restorecon_recursive: %s\n", buf);
-#ifdef _PLATFORM_BASE
-        if(!strcmp(upath, DEVICES_BASE))
-            restorecon(buf);
-        else
-            restorecon_recursive(buf);
-#else
         restorecon_recursive(buf);
-#endif
     }
 }
 
@@ -283,18 +273,11 @@ static void add_platform_device(const char *path)
     struct platform_node *bus;
     const char *name = path;
 
-#ifdef _PLATFORM_BASE
-    if (!strncmp(path, _PLATFORM_BASE, strlen(_PLATFORM_BASE)))
-        name += strlen(_PLATFORM_BASE);
-    else
-        return;
-#else
     if (!strncmp(path, "/devices/", 9)) {
         name += 9;
         if (!strncmp(name, "platform/", 9))
             name += 9;
     }
-#endif
 
     list_for_each_reverse(node, &platform_names) {
         bus = node_to_item(node, struct platform_node, list);
@@ -351,35 +334,6 @@ static void remove_platform_device(const char *path)
             return;
         }
     }
-}
-
-/* Given a path that may start with an MTD device (/devices/virtual/mtd/mtd8/mtdblock8),
- * populate the supplied buffer with the MTD partition number and return 0.
- * If it doesn't start with an MTD device, or there is some error, return -1 */
-static int find_mtd_device_prefix(const char *path, char *buf, ssize_t buf_sz)
-{
-    const char *start, *end;
-
-    if (strncmp(path, "/devices/virtual/mtd", 20))
-        return -1;
-
-    /* Beginning of the prefix is the initial "mtdXX" after "/devices/virtual/mtd/" */
-    start = path + 21;
-
-    /* End of the prefix is one path '/' later, capturing the partition number
-     * Example: mtd8 */
-    end = strchr(start, '/');
-    if (!end) {
-        return -1;
-    }
-
-    /* Make sure we have enough room for the string plus null terminator */
-    if (end - start + 1 > buf_sz)
-        return -1;
-
-    strncpy(buf, start, end - start);
-    buf[end - start] = '\0';
-    return 0;
 }
 
 /* Given a path that may start with a PCI device, populate the supplied buffer
@@ -484,41 +438,6 @@ static void parse_event(const char *msg, struct uevent *uevent)
                     uevent->firmware, uevent->major, uevent->minor);
 }
 
-static char **get_v4l_device_symlinks(struct uevent *uevent)
-{
-    char **links;
-    int fd = -1;
-    int nr;
-    char link_name_path[256];
-    char link_name[64];
-
-    if (strncmp(uevent->path, "/devices/virtual/video4linux/video", 34))
-        return NULL;
-
-    links = malloc(sizeof(char *) * 2);
-    if (!links)
-        return NULL;
-    memset(links, 0, sizeof(char *) * 2);
-
-    snprintf(link_name_path, sizeof(link_name_path), "%s%s%s",
-            SYSFS_PREFIX, uevent->path, "/link_name");
-    fd = open(link_name_path, O_RDONLY);
-    if (fd < 0)
-        goto err;
-    nr = read(fd, link_name, sizeof(link_name) - 1);
-    close(fd);
-    if (nr <= 0)
-        goto err;
-    link_name[nr] = '\0';
-    if (asprintf(&links[0], "/dev/video/%s", link_name) <= 0)
-        links[0] = NULL;
-
-    return links;
-err:
-    free(links);
-    return NULL;
-}
-
 static char **get_character_device_symlinks(struct uevent *uevent)
 {
     const char *parent;
@@ -586,12 +505,7 @@ static char **get_block_device_symlinks(struct uevent *uevent)
     int ret;
     char *p;
     unsigned int size;
-    int is_bootdevice = -1;
     struct stat info;
-    int mtd_fd = -1;
-    int nr;
-    char mtd_name_path[256];
-    char mtd_name[64];
 
     pdev = find_platform_device(uevent->path);
     if (pdev) {
@@ -600,51 +514,18 @@ static char **get_block_device_symlinks(struct uevent *uevent)
     } else if (!find_pci_device_prefix(uevent->path, buf, sizeof(buf))) {
         device = buf;
         type = "pci";
-    } else if (!find_mtd_device_prefix(uevent->path, buf, sizeof(buf))) {
-        device = buf;
-        type = "mtd";
     } else {
         return NULL;
     }
 
-    char **links = malloc(sizeof(char *) * 6);
+    char **links = malloc(sizeof(char *) * 4);
     if (!links)
         return NULL;
-    memset(links, 0, sizeof(char *) * 6);
+    memset(links, 0, sizeof(char *) * 4);
 
     INFO("found %s device %s\n", type, device);
 
     snprintf(link_path, sizeof(link_path), "/dev/block/%s/%s", type, device);
-
-    if(!strcmp(type, "mtd")) {
-        snprintf(mtd_name_path, sizeof(mtd_name_path),
-            "/sys/devices/virtual/%s/%s/name", type, device);
-        mtd_fd = open(mtd_name_path, O_RDONLY);
-            if(mtd_fd < 0) {
-                ERROR("Unable to open %s for reading", mtd_name_path);
-                return NULL;
-            }
-        nr = read(mtd_fd, mtd_name, sizeof(mtd_name) - 1);
-        if (nr <= 0)
-            return NULL;
-        close(mtd_fd);
-        mtd_name[nr - 1] = '\0';
-
-        p = strdup(mtd_name);
-        sanitize(p);
-        if (asprintf(&links[link_num], "/dev/block/%s/by-name/%s", type, p) > 0)
-            link_num++;
-        else
-            links[link_num] = NULL;
-        free(p);
-    }
-
-    if (bootdevice[0] == '\0')
-        is_bootdevice = 0;
-    else if (!strncmp(device, bootdevice, sizeof(bootdevice))) {
-        make_link_init(link_path, "/dev/block/bootdevice");
-        is_bootdevice = 1;
-    }
 
     if (uevent->partition_name) {
         p = strdup(uevent->partition_name);
@@ -655,13 +536,6 @@ static char **get_block_device_symlinks(struct uevent *uevent)
             link_num++;
         else
             links[link_num] = NULL;
-
-        if (is_bootdevice >= 0) {
-            if (asprintf(&links[link_num], "/dev/block/bootdevice/by-name/%s", p) > 0)
-                link_num++;
-            else
-                links[link_num] = NULL;
-        }
         free(p);
     }
 
@@ -670,13 +544,6 @@ static char **get_block_device_symlinks(struct uevent *uevent)
             link_num++;
         else
             links[link_num] = NULL;
-
-        if (is_bootdevice >= 0) {
-            if (asprintf(&links[link_num], "/dev/block/bootdevice/by-num/p%d", uevent->partition_num) > 0)
-                link_num++;
-            else
-                links[link_num] = NULL;
-        }
     }
 
     slash = strrchr(uevent->path, '/');
@@ -895,32 +762,9 @@ static void handle_generic_device_event(struct uevent *uevent)
          base = "/dev/log/";
          make_dir(base, 0755);
          name += 4;
-     } else if (!strncmp(uevent->subsystem, "dvb", 3)) {
-         /* This imitates the file system that would be created
-          * if we were using devfs instead to preserve backward compatibility
-          * for users of dvb devices
-          */
-         int adapter_id;
-         char dev_name[20] = {0};
-
-         sscanf(name, "dvb%d.%s", &adapter_id, dev_name);
-
-         /* build dvb directory */
-         base = "/dev/dvb";
-         mkdir(base, 0755);
-
-         /* build adapter directory */
-         snprintf(devpath, sizeof(devpath), "/dev/dvb/adapter%d", adapter_id);
-         mkdir(devpath, 0755);
-
-         /* build actual device directory */
-         snprintf(devpath, sizeof(devpath), "/dev/dvb/adapter%d/%s",
-                  adapter_id, dev_name);
      } else
          base = "/dev/";
      links = get_character_device_symlinks(uevent);
-     if (!links)
-         links = get_v4l_device_symlinks(uevent);
 
      if (!devpath[0])
          snprintf(devpath, sizeof(devpath), "%s%s", base, name);
@@ -943,20 +787,23 @@ static void handle_device_event(struct uevent *uevent)
     }
 }
 
-static int load_firmware(int fw_fd, gzFile gz_fd, int loading_fd, int data_fd)
+static int load_firmware(int fw_fd, int loading_fd, int data_fd)
 {
+    struct stat st;
+    long len_to_copy;
     int ret = 0;
+
+    if(fstat(fw_fd, &st) < 0)
+        return -1;
+    len_to_copy = st.st_size;
 
     write(loading_fd, "1", 1);  /* start transfer */
 
-    while (1) {
+    while (len_to_copy > 0) {
         char buf[PAGE_SIZE];
         ssize_t nr;
 
-        if (gz_fd)
-            nr = gzread(gz_fd, buf, sizeof(buf));
-        else
-            nr = read(fw_fd, buf, sizeof(buf));
+        nr = read(fw_fd, buf, sizeof(buf));
         if(!nr)
             break;
         if(nr < 0) {
@@ -964,6 +811,7 @@ static int load_firmware(int fw_fd, gzFile gz_fd, int loading_fd, int data_fd)
             break;
         }
 
+        len_to_copy -= nr;
         while (nr > 0) {
             ssize_t nw = 0;
 
@@ -979,10 +827,8 @@ static int load_firmware(int fw_fd, gzFile gz_fd, int loading_fd, int data_fd)
 out:
     if(!ret)
         write(loading_fd, "0", 1);  /* successful end of transfer */
-    else {
-        ERROR("%s: aborted transfer\n", __func__);
+    else
         write(loading_fd, "-1", 2); /* abort transfer */
-    }
 
     return ret;
 }
@@ -992,47 +838,11 @@ static int is_booting(void)
     return access("/dev/.booting", F_OK) == 0;
 }
 
-gzFile fw_gzopen(const char *fname, const char *mode)
-{
-    char *file1 = NULL, *file2 = NULL, *file3 = NULL;
-    int l;
-    gzFile gz_fd = NULL;
-
-    l = asprintf(&file1, FIRMWARE_DIR1"/%s.gz", fname);
-    if (l == -1)
-        goto out;
-
-    l = asprintf(&file2, FIRMWARE_DIR2"/%s.gz", fname);
-    if (l == -1)
-        goto file1_free_out;
-
-    l = asprintf(&file3, FIRMWARE_DIR3"/%s.gz", fname);
-    if (l == -1)
-        goto file2_free_out;
-
-    gz_fd = gzopen(file1, mode);
-    if(!gz_fd) {
-        gz_fd = gzopen(file2, mode);
-        if (!gz_fd) {
-            gz_fd = gzopen(file3, mode);
-        }
-    }
-
-    free(file3);
-file2_free_out:
-    free(file2);
-file1_free_out:
-    free(file1);
-out:
-    return gz_fd;
-}
-
 static void process_firmware_event(struct uevent *uevent)
 {
     char *root, *loading, *data, *file1 = NULL, *file2 = NULL, *file3 = NULL;
     int l, loading_fd, data_fd, fw_fd;
     int booting = is_booting();
-    gzFile gz_fd = NULL;
 
     INFO("firmware: loading '%s' for '%s'\n",
          uevent->firmware, uevent->path);
@@ -1076,33 +886,27 @@ try_loading_again:
         if (fw_fd < 0) {
             fw_fd = open(file3, O_RDONLY);
             if (fw_fd < 0) {
-                gz_fd = fw_gzopen(uevent->firmware, "rb");
-                if (!gz_fd) {
-                    if (booting || (access("/system/etc/firmware", F_OK) != 0)) {
-                            /* If we're not fully booted, we may be missing
-                             * filesystems needed for firmware, wait and retry.
-                             */
-                        usleep(100000);
-                        booting = is_booting();
-                        goto try_loading_again;
-                    }
-                    INFO("firmware: could not open '%s' %d\n", uevent->firmware, errno);
-                    write(loading_fd, "-1", 2);
-                    goto data_close_out;
+                if (booting) {
+                        /* If we're not fully booted, we may be missing
+                         * filesystems needed for firmware, wait and retry.
+                         */
+                    usleep(100000);
+                    booting = is_booting();
+                    goto try_loading_again;
                 }
+                INFO("firmware: could not open '%s' %d\n", uevent->firmware, errno);
+                write(loading_fd, "-1", 2);
+                goto data_close_out;
             }
         }
     }
 
-    if(!load_firmware(fw_fd, gz_fd, loading_fd, data_fd))
+    if(!load_firmware(fw_fd, loading_fd, data_fd))
         INFO("firmware: copy success { '%s', '%s' }\n", root, uevent->firmware);
     else
         INFO("firmware: copy failure { '%s', '%s' }\n", root, uevent->firmware);
 
-    if (gz_fd)
-        gzclose(gz_fd);
-    else
-        close(fw_fd);
+    close(fw_fd);
 data_close_out:
     close(data_fd);
 loading_close_out:

@@ -41,6 +41,8 @@
 #include <sys/prctl.h>
 #include <getopt.h>
 #include <selinux/selinux.h>
+#else
+#include "usb_vendors.h"
 #endif
 
 #if ADB_TRACE
@@ -1316,6 +1318,7 @@ int adb_main(int is_daemon, int server_port)
 #ifdef WORKAROUND_BUG6558362
     if(is_daemon) adb_set_affinity();
 #endif
+    usb_vendors_init();
     usb_init();
     local_init(DEFAULT_ADB_LOCAL_TRANSPORT_PORT);
     adb_auth_init();
@@ -1326,12 +1329,8 @@ int adb_main(int is_daemon, int server_port)
         exit(1);
     }
 #else
-    // Override auth in factory test mode
-    property_get("ro.boot.ftm", value, "0");
-    if (!strcmp(value, "0")) {
-        property_get("ro.adb.secure", value, "0");
-        auth_enabled = !strcmp(value, "1");
-    }
+    property_get("ro.adb.secure", value, "0");
+    auth_enabled = !strcmp(value, "1");
     if (auth_enabled)
         adb_auth_init();
 
@@ -1350,12 +1349,13 @@ int adb_main(int is_daemon, int server_port)
     ** AID_LOG to read system logs (adb logcat)
     ** AID_INPUT to diagnose input issues (getevent)
     ** AID_INET to diagnose network issues (netcfg, ping)
+    ** AID_GRAPHICS to access the frame buffer
     ** AID_NET_BT and AID_NET_BT_ADMIN to diagnose bluetooth (hcidump)
     ** AID_SDCARD_R to allow reading from the SD card
     ** AID_SDCARD_RW to allow writing to the SD card
     ** AID_NET_BW_STATS to read out qtaguid statistics
     */
-    gid_t groups[] = { AID_ADB, AID_LOG, AID_INPUT, AID_INET,
+    gid_t groups[] = { AID_ADB, AID_LOG, AID_INPUT, AID_INET, AID_GRAPHICS,
                        AID_NET_BT, AID_NET_BT_ADMIN, AID_SDCARD_R, AID_SDCARD_RW,
                        AID_NET_BW_STATS };
     if (setgroups(sizeof(groups)/sizeof(groups[0]), groups) != 0) {
@@ -1685,10 +1685,6 @@ int handle_host_request(char *service, transport_type ttype, char* serial, int r
     return -1;
 }
 
-#if !ADB_HOST
-int recovery_mode = 0;
-#endif
-
 int main(int argc, char **argv)
 {
 #if ADB_HOST
@@ -1721,8 +1717,6 @@ int main(int argc, char **argv)
             break;
         }
     }
-
-    recovery_mode = (strcmp(adb_device_banner, "recovery") == 0);
 
     start_device_log();
     D("Handling main()\n");
